@@ -14,6 +14,7 @@ import { extractJsonObject, readString, readStringArray } from "../utils/parse";
 import { groundedSourceIds } from "./impression";
 import { diarySpeakerRules, loadSpeakersForNamespace, speakerLabel, type DreamSpeakers } from "./speakers";
 import { CHAT_MATERIAL_RULES, formatChatMaterial } from "./chatMaterial";
+import { DIARY_STYLE_RULES } from "./diaryStyle";
 
 const DEFAULT_DREAM_MODEL = "workers-ai/@cf/openai/gpt-oss-120b";
 const MAX_MESSAGES = 200;
@@ -101,8 +102,7 @@ export function buildDiaryWriterPrompt(input: {
       : "- 情绪可以概括（「她今天显得累」）。禁止把碎片揉成没发生过的情节，例如「傍晚下班后抱怨某事又蠢又累」。",
     "- 每条具体事实必须在 source_message_ids 里挂上原文消息 id（聊天记录方括号里的 id）。编造的 id 无效。",
     "- 拿不准就写得更宽泛，或者不写。宁可少记，不要写实幻觉。",
-    "- summary 是一段 200-400 字的自然中文，允许口语，禁止列表、标题、emoji 堆砌。",
-    "- title 是 12 字以内的日记标题，像给自己起的题目。",
+    ...DIARY_STYLE_RULES, // Ayn fork mod: see diaryStyle.ts
     "- 禁止提及 D1、Vectorize、RAG、数据库、记忆系统、prompt、代理层等实现细节。",
     ...CHAT_MATERIAL_RULES,
     "",
