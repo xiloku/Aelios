@@ -149,6 +149,10 @@ export interface OpenAIChatMessage {
   reasoning_content?: string;
   tool_call_id?: string;
   tool_calls?: unknown;
+  /** Ingest backfill: caller-supplied original time (ISO 8601 with offset/Z). */
+  created_at?: string;
+  /** Ingest idempotency: caller-supplied stable id, deduped per namespace + conversation. */
+  client_message_id?: string;
 }
 
 export interface OpenAIChatRequest {
