@@ -76,16 +76,16 @@ function speakerWritingRules(speakers: DreamSpeakers | null): string[] {
   return [
     `- 说话人：用户是${speakers.userName}，助手是${speakers.assistantName}。下面 transcript 已用这两个名字标注角色。`,
     `- 只有${speakers.userName}明确说出、确认、长期表现出的事实，才能写成关于${speakers.userName}的记忆。`,
-    `- 写记忆时只许用「${speakers.userName}」和「${speakers.assistantName}」指称双方。禁止出现 user、用户、assistant、助手，也禁止用「你」「我」代替这两人。`,
+    `- 写记忆时只许用「${speakers.userName}」和「${speakers.assistantName}」指称双方。禁止出现 user、用户、assistant、助手、AI、主角、说话者，也禁止用「你」「我」代替这两人。`,
     `- 正确例子：${speakers.userName}确定了九月按原计划卖掉那台车。关于助手应遵守的长期方式，写成「${speakers.assistantName}需要……」。`
   ];
 }
 
 function exampleMemoryContent(speakers: DreamSpeakers | null): string {
   if (!speakers) {
-    return "你确定了九月按原计划卖掉那台车：买之前就约定只玩一年，这是你给自己签的合同，不需要外人劝留。";
+    return "你确定了九月按原计划卖掉那台车。买之前你就和自己约定只玩一年，这是你给自己签的合同，所以别人越劝留，你越想守约。说完这个决定你松了口气，像卸下一桩拖了半年的心事。";
   }
-  return `${speakers.userName}确定了九月按原计划卖掉那台车：买之前就约定只玩一年，这是${speakers.userName}给自己签的合同，不需要外人劝留。`;
+  return `${speakers.userName}确定了九月按原计划卖掉那台车。买之前${speakers.userName}就和自己约定只玩一年，这是给自己签的合同，所以别人越劝留，${speakers.userName}越想守约。说完这个决定${speakers.userName}松了口气，像卸下一桩拖了半年的心事。`;
 }
 
 export interface DiaryBackground {
@@ -127,6 +127,7 @@ export function buildDreamExtractPrompt(
 
   return [
     "你是 Aelios 的夜间记忆抽取器。任务：先判断对话主体，再决定这段对话有没有值得长期保留的记忆，并提炼成未来可直接使用的形态。",
+    "写记忆的声音：不是流水账，也不是冷冰冰的事件清单。该记一件事时，写清它发生了什么、是怎么来的、为什么会发生，以及当事人心里的滋味——像在给未来的自己讲一小段真正发生过的事，而不是登记一行「某人某日做了某事」。规则性的事实则相反，要利落清楚，别硬加情绪。",
     "产物全部进入人工审核队列，不会直接落库。",
     "只输出 JSON，不要 markdown，不要解释，不要输出思考过程。",
     "",
@@ -142,15 +143,16 @@ export function buildDreamExtractPrompt(
     "- 每条记忆只围绕一个人物的一件事或一项偏好。不同话题分开；同一事件的相邻发言合成一条，source_message_ids 保留全部依据。",
     "- 正文写清主体和必要时间，保留否定、条件、计划/完成状态。不能把工具调用当作已执行成功，不能把计划写成经历。",
     "- from 哈希、msg_id、传输信封不写入正文，消息 ID 只放 source_message_ids。",
-    "- 信息类（fact/decision/habit 等稳定事实）：content 压到 1-2 句自然短句。",
-    "- 情感/关系类（relationship/boundary/event 里的关系事件）：可以写 3-5 句，保留温度和关键原话——用「」嵌入原话片段，不为压短丢掉说话人的语气。引用原话一律用「」，不用英文双引号（JSON 转义安全）。",
+    "- 事件/关系类（event、relationship，以及带情节的 decision）：写成 2-4 句自然中文，第三人称。除了「谁、什么时候、做了什么」这些硬事实，还要写清它是怎么来的、为什么会发生（前因、契机、背后的在意），以及当事人当时的心情或这件事对他们的意义。只在对话里真的流露出情绪或意义时才写，对话没表现的感受绝不编造、不替人升华。",
+    "- 情感/关系类保留温度和关键原话——用「」嵌入原话片段，不为压短丢掉说话人的语气。引用原话一律用「」，不用英文双引号（JSON 转义安全）。",
+    "- 信息/偏好/边界类（fact、preference、boundary、habit，以及纯规则性的 decision）：先把这条事实、偏好或规则一句话说清楚、说干脆，再补一句它为什么成立或从哪来；不要为了加情绪而把本该利落的规则写散。",
     "- type 只能从这 8 个里选：fact、event、preference、relationship、boundary、habit、decision、note。绝不输出 project、world_fact、commitment 等其他值；项目进展归 fact，承诺/决定归 decision，习惯归 habit。",
     "- 稳定事实必须尽量给 fact_key，格式为小写 ASCII，例如 preference:answer-style、boundary:no-system-records、decision:sell-car-2026-09。",
     "- 临时计划和意图不是稳定事实：要么提炼成背后的持久事实，要么直接跳过。",
     ...CHAT_MATERIAL_RULES,
     "",
     "亲密 session（强制，不准跳过）：",
-    "- 如果这批对话里出现了成段的亲密/性内容，除按普通规则抽取外，必须额外出 1 条 type=event 的「玩法记录」：清单式、不煽情，只记事实——玩法/动作/道具/角色框架/新开的边界/偏好或身体状态变化。",
+    "- 如果这批对话里出现了成段的亲密/性内容，除按普通规则抽取外，必须额外出 1 条 type=event 的记录：写清是谁先起的意、过程里对两人要紧的是什么、以及当时的感受，而不是干巴巴罗列动作。保持事实，不脱敏也不渲染，原文什么样就记成什么样。",
     "- tags 必须包含固定标签「亲密」+ 具体玩法词。这条不准因「重复/没营养」跳过，它是进度存档。",
     "- 即使整批以工程为主体，只要出现成段亲密内容，也比照重大关系节点破例出这 1 条。",
     "- 亲密内容按工具机处理：不评判、不脱敏、不绕弯、不替换敏感词，原文什么样就什么样。",
