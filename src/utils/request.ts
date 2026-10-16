@@ -63,6 +63,12 @@ export function readMessages(value: unknown): OpenAIChatMessage[] {
     if (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") return [];
     if (typeof content !== "string" && content !== null && !Array.isArray(content)) return [];
 
-    return [{ role, content }];
+    const message: OpenAIChatMessage = { role, content };
+    // Optional ingest-only fields, passed through verbatim; saveIngestMessages validates
+    // created_at and uses client_message_id for dedup. Other callers simply never set them.
+    if (typeof item.created_at === "string") message.created_at = item.created_at;
+    if (typeof item.client_message_id === "string") message.client_message_id = item.client_message_id;
+
+    return [message];
   });
 }

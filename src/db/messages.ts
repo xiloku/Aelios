@@ -2,7 +2,7 @@ import { upsertMessageFts } from "../memory/fts";
 import type { MessageRecord, OpenAIChatMessage, TokenUsage } from "../types";
 import { sha256Hex } from "../utils/hash";
 import { newId } from "../utils/ids";
-import { nowIso } from "../utils/time";
+import { nowIso, normalizeIngestCreatedAt } from "../utils/time";
 import { cleanMessageText } from "../utils/sanitize";
 
 export const MESSAGE_ORDER_SQL =
@@ -308,14 +308,37 @@ export async function saveIngestMessages(
     const content = cleanMessageText(contentToText(message.content));
     if (!content) continue;
 
+    // Optional backfill time: a valid, in-window ISO instant is stored as-is (normalized
+    // to nowIso()'s format); anything else falls back to now. seq keeps intra-batch order.
+    const createdAt = normalizeIngestCreatedAt(message.created_at) ?? nowIso();
+
+    // Optional idempotency key (<=128 chars). When present, skip if a row already exists
+    // for this (namespace, conversation_id, client_message_id). Absent key => old behavior.
+    const clientMessageId =
+      typeof message.client_message_id === "string" && message.client_message_id.length <= 128
+        ? message.client_message_id
+        : null;
+
+    if (clientMessageId) {
+      const existing = await db
+        .prepare(
+          `SELECT id FROM messages
+           WHERE namespace = ? AND conversation_id = ? AND client_message_id = ?
+           LIMIT 1`
+        )
+        .bind(input.namespace, input.conversationId, clientMessageId)
+        .first<{ id: string }>();
+      if (existing) continue;
+    }
+
     const id = newId("msg");
     ids.push(id);
 
     await db
       .prepare(
         `INSERT INTO messages (
-          id, conversation_id, namespace, role, content, source, stream, created_at, seq
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          id, conversation_id, namespace, role, content, source, stream, created_at, seq, client_message_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         id,
@@ -325,8 +348,9 @@ export async function saveIngestMessages(
         content,
         input.source,
         0,
-        nowIso(),
-        seq
+        createdAt,
+        seq,
+        clientMessageId
       )
       .run();
     await upsertMessageFts(db, { namespace: input.namespace, messageId: id, content });

@@ -208,6 +208,15 @@ Configuration has three layers, all under `/admin` Settings: upstream, assistant
 
 Everything except `/health` and `/admin` requires `Authorization: Bearer <key>`. The gateway authorizes by assistant key; memory APIs by `memory:read` / `memory:write` scopes.
 
+#### `/v1/ingest/messages`
+
+Body: `{ messages: [{ role, content, created_at?, client_message_id? }], conversation_id?, namespace?, source? }`. Each message additionally accepts two optional fields, used for backfilling old chats:
+
+- `created_at` — ISO 8601 instant with an offset or `Z` (e.g. `2026-09-01T14:30:00+08:00`). Stored as the message's time when it is valid, not in the future (a 5-minute clock-skew allowance), and not older than 60 days; otherwise the server's current time is used. Timestamps are normalized to UTC (`YYYY-MM-DDTHH:mm:ss.sssZ`).
+- `client_message_id` — a stable string (≤128 chars). When present, re-ingesting the same id in the same namespace + conversation is skipped, so replaying a batch does not create duplicate rows. Messages without it behave exactly as before.
+
+The same two fields are accepted by the MCP `log_conversation` and `memory_ingest` tools.
+
 ### MCP tools
 
 `wake_up` `recall` `remember` `keep_moment` `forget` `learn_word` `read_diary` `log_conversation` `list_memories`

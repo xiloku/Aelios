@@ -413,7 +413,19 @@ function getTools(options: ToolListOptions): Array<Record<string, unknown>> {
               type: "object",
               properties: {
                 role: { type: "string", enum: ["user", "assistant"], description: "user for the person, assistant for you." },
-                content: { type: "string", description: "What was said." }
+                content: { type: "string", description: "What was said." },
+                created_at: {
+                  type: "string",
+                  description:
+                    "Optional original time (ISO 8601 with offset or Z). Used to backfill old chats; stored when valid, " +
+                    "not in the future (5-min skew allowed) and within 60 days, else the current time is used."
+                },
+                client_message_id: {
+                  type: "string",
+                  description:
+                    "Optional stable id (<=128 chars). Re-sending the same id in the same conversation is skipped, so a " +
+                    "replayed chat does not duplicate rows."
+                }
               },
               required: ["role", "content"]
             }
