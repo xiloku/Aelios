@@ -23,8 +23,23 @@ export interface ListMemoryFilters {
   namespace: string;
   type?: string;
   status?: string;
+  // Server-side filter: keep only rows whose fact_key starts with this prefix.
+  // Passing "world:" matches BOTH world: and world_fact: (world facts are
+  // stored as type=fact + fact_key world:/world_fact:, never type=world_fact,
+  // because the write path clamps type to the 8 canonical values). Any other
+  // prefix matches literally.
+  factKeyPrefix?: string;
   limit: number;
   offset?: number;
+}
+
+// 世界知识: fact_key 以 world: 或 world_fact: 开头的都算。传 "world:" 想同时命中
+// 这两种历史写法，所以这里把它展开成两个前缀；其它前缀按字面匹配一个。
+function factKeyPrefixesFor(prefix: string): string[] {
+  const trimmed = prefix.trim();
+  if (!trimmed) return [];
+  if (trimmed === "world:") return ["world:", "world_fact:"];
+  return [trimmed];
 }
 
 export interface ListMemoryPage {
@@ -114,6 +129,17 @@ export async function listMemoriesPage(db: D1Database, filters: ListMemoryFilter
   if (filters.status) {
     sql += " AND status = ?";
     binds.push(filters.status);
+  }
+
+  if (filters.factKeyPrefix) {
+    const prefixes = factKeyPrefixesFor(filters.factKeyPrefix);
+    if (prefixes.length > 0) {
+      const clauses = prefixes.map(() => "fact_key LIKE ? ESCAPE '\\'");
+      sql += ` AND (${clauses.join(" OR ")})`;
+      for (const prefix of prefixes) {
+        binds.push(`${escapeLike(prefix)}%`);
+      }
+    }
   }
 
   const offset = Math.max(Math.floor(filters.offset ?? 0), 0);

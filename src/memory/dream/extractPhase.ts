@@ -72,6 +72,7 @@ export function buildDigestPrompt(input: {
     "- memories_to_add 保留兼容字段，v2 下默认输出空数组。",
     "- memories_to_update 只针对给出的旧记忆 id。",
     "- memories_to_update 里的 type 只能从这 8 个里选：fact、event、preference、relationship、boundary、habit、decision、note；项目进展归 fact，承诺/决定归 decision。绝不输出 project、world_fact 等其他值。",
+    "- 如果某条更新是关于外部世界、会随时间改变的事实（平台/模型是否可用、价格或计费倍率、软件改名/版本、游戏改动、某项服务是否还能用等），保持 type=fact，并把 fact_key 设为 world:<小写 ASCII 短 slug>；如果对话里给了日期，带上 valid_as_of（ISO 日期）。",
     "- memories_to_delete 只删除空、重复、明显过期或被新信息否定的旧记忆。",
     "- 控制总输出长度，宁可少写也不要输出超长 JSON。",
     "",

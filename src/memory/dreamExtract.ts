@@ -148,6 +148,7 @@ export function buildDreamExtractPrompt(
     "- 信息/偏好/边界类（fact、preference、boundary、habit，以及纯规则性的 decision）：先把这条事实、偏好或规则一句话说清楚、说干脆，再补一句它为什么成立或从哪来；不要为了加情绪而把本该利落的规则写散。",
     "- type 只能从这 8 个里选：fact、event、preference、relationship、boundary、habit、decision、note。绝不输出 project、world_fact、commitment 等其他值；项目进展归 fact，承诺/决定归 decision，习惯归 habit。",
     "- 稳定事实必须尽量给 fact_key，格式为小写 ASCII，例如 preference:answer-style、boundary:no-system-records、decision:sell-car-2026-09。",
+    "- 如果这条是关于外部世界、会随时间改变的事实（平台/模型是否可用、价格或计费倍率、软件改名/版本、游戏改动、某项服务是否还能用等），仍然保持 type=fact，但 fact_key 要以 world: 开头，格式 world:<小写 ASCII 短 slug>，例如 world:gpt-5-released、world:claude-price-cut；如果对话里给了日期，再带上 valid_as_of（ISO 日期）。",
     "- 临时计划和意图不是稳定事实：要么提炼成背后的持久事实，要么直接跳过。",
     ...CHAT_MATERIAL_RULES,
     "",

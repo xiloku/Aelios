@@ -158,6 +158,7 @@ async function handleListMemories(request: Request, env: Env, profile: KeyProfil
     namespace,
     status: readString(url.searchParams.get("status")) || "active",
     type: readString(url.searchParams.get("type")),
+    factKeyPrefix: readString(url.searchParams.get("fact_key_prefix")),
     limit,
     offset
   });

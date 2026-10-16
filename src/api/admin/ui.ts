@@ -1962,7 +1962,9 @@ function memoryAdmin() {
     async loadWorldFacts() {
       const revision = this.spaceRevision;
       try {
-        const data = await this.request(this.withNamespace('/v1/memory?status=active&limit=80&type=world_fact'));
+        // 世界知识 = fact_key 以 world:/world_fact: 开头的 active 记忆（任意 type）。
+        // v3-slim 后 type 被钳到 8 个固定值，world_fact 永远存不进去，所以按 fact_key 前缀列。
+        const data = await this.request(this.withNamespace('/v1/memory?status=active&limit=80&fact_key_prefix=world:'));
         if (revision !== this.spaceRevision) return;
         this.worldItems = data.data || [];
         this.pruneWorldSelection();
