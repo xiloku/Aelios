@@ -1,8 +1,7 @@
 import {
   createMemoryCandidate,
   resolveMemoryFactKey,
-  supersedeMemory,
-  upsertDailyLog
+  supersedeMemory
 } from "../../db/v2";
 import { getMemoryById } from "../../db/memories";
 import type { Env, MessageRecord } from "../../types";
@@ -167,13 +166,11 @@ export async function applyDreamV2(
     }
   }
 
-  await upsertDailyLog(env.DB, {
-    namespace,
-    date: dateLabel,
-    title: digest.title ?? dateLabel,
-    summary: digest.summary ?? "",
-    sourceMessageIds: messageIds
-  });
+  // daily_log is now written only by runDiaryWriter (the first-person narrative diary),
+  // so a dream run never overwrites the diary with its "what consolidation did" report.
+  // The dream run report still lives in dream_runs + memory_events (dream_lmc5_report / dream_z_audit).
+  // Readers of daily_log (loadDiaryBackground, weekly/monthly rollup, admin diary API) all
+  // tolerate a missing row for a day whose diary has not been written yet.
 
   return { added: 0, updated, deleted, queuedCandidates, longtail: 0, errors };
 }

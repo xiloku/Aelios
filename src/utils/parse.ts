@@ -69,3 +69,67 @@ export function extractJsonObject(text: string): unknown | null {
     return null;
   }
 }
+
+/**
+ * Tolerant extraction of the FIRST balanced JSON object in a string.
+ *
+ * `extractJsonObject` slices from the first `{` to the LAST `}`. That breaks on two shapes
+ * a chat model routinely produces:
+ *  - prose or a second object after the diary JSON (the last `}` then belongs to the wrong
+ *    object, so the slice is not valid JSON), and
+ *  - a reply truncated by a token limit mid-object (there is no final `}`, so the last `}`
+ *    is an inner one and the slice is unbalanced).
+ *
+ * This scanner walks the text tracking string state and escapes, so braces inside string
+ * values never affect depth, and returns the first top-level `{...}` that balances. It also
+ * strips a leading ```json / ``` fence. Returns the parsed value, or null when no balanced
+ * object exists (e.g. a genuinely truncated reply) — the caller then retries.
+ */
+export function extractFirstJsonObject(text: string): unknown | null {
+  // Fast path: a clean reply parses directly.
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    // fall through to scanning
+  }
+
+  // Drop a surrounding markdown code fence if present (```json ... ``` or ``` ... ```).
+  const unfenced = text.replace(/```[a-zA-Z0-9]*\s*/g, "").replace(/```/g, "");
+
+  const start = unfenced.indexOf("{");
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < unfenced.length; i += 1) {
+    const ch = unfenced[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{") {
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return JSON.parse(unfenced.slice(start, i + 1)) as unknown;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+
+  // No balanced object closed (truncated reply).
+  return null;
+}

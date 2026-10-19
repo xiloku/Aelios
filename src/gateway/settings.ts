@@ -50,6 +50,7 @@ export const SETTINGS: SettingSpec[] = [
   { group: "Dream 与日记", name: "DREAM_NAMESPACE", label: "夜整写进哪个记忆空间", hint: "默认 default" },
   { group: "Dream 与日记", name: "ENABLE_DIARY_WRITER", label: "夜整后写叙事日记", hint: "默认开。关掉不写日记", kind: "switch", defaultOn: true, common: true },
   { group: "Dream 与日记", name: "DIARY_MODEL", label: "日记和月记用的模型", hint: "留空回落 DREAM_MODEL" },
+  { group: "Dream 与日记", name: "DIARY_MAX_TOKENS", label: "日记单轮输出上限", hint: "留空按 6000（最低 4000，上限 8000）。八段叙事日记比夜整抽取长得多，太低会被截断成非法 JSON" },
   { group: "Dream 与日记", name: "SUMMARY_MODEL", label: "摘要模型的最后兜底", hint: "DREAM_MODEL 和旧名 DAILY_DIGEST_MODEL 都没填时，摘要链路用它" },
   { group: "Dream 与日记", name: "ENABLE_WEEKLY_ROLLUP", label: "周记汇总", hint: "默认开。关掉不生成 weekly_log，命中也就没有周块可附", kind: "switch", defaultOn: true },
   { group: "Dream 与日记", name: "ENABLE_MONTHLY_ROLLUP", label: "月记汇总", hint: "默认开。关掉不生成 monthly_log", kind: "switch", defaultOn: true },

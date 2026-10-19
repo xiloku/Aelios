@@ -71,6 +71,10 @@ export interface Env {
   // dedicated diary writer after dream; default on unless "false"
   ENABLE_DIARY_WRITER?: string;
   DIARY_MODEL?: string;
+  // Diary writer's own output budget. The 8-section first-person diary is far longer than
+  // the dream extract phase, so it reads this before the shared DREAM_MAX_TOKENS and floors
+  // at 4000 to avoid token-limit truncation (the 2026-10-18 model_invalid_json cause).
+  DIARY_MAX_TOKENS?: string;
   DEDUP_COSINE?: string;
   // 每天夜整完用 Cloudflare 的 clef 审候选，只分记住和放下。默认开，off/false 关。
   CLEF_AUTO_REVIEW?: string;
