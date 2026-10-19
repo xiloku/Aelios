@@ -10,7 +10,7 @@ import {
 import { readDreamTimeZoneFromEnv } from "./dreamEnv";
 import { readDreamCursorValue } from "./dailyDigest";
 import { getIsoWeekLabelForDateLabel } from "./weeklyRollup";
-import { extractJsonObject, readString, readStringArray } from "../utils/parse";
+import { extractFirstJsonObject, readString, readStringArray } from "../utils/parse";
 import { groundedSourceIds } from "./impression";
 import { diarySpeakerRules, loadSpeakersForNamespace, speakerLabel, type DreamSpeakers } from "./speakers";
 import { CHAT_MATERIAL_RULES, formatChatMaterial } from "./chatMaterial";
@@ -55,9 +55,16 @@ function readDiaryModel(env: Env): string {
 }
 
 function readDiaryMaxTokens(env: Env): number {
-  const parsed = Number(env.DREAM_MAX_TOKENS || env.DAILY_DIGEST_MAX_TOKENS || 3000);
-  const numeric = Number.isFinite(parsed) ? parsed : 3000;
-  return Math.min(Math.max(Math.floor(numeric), 1), 8000);
+  // The 8-section first-person diary summary runs 1000-2000 CJK chars, which is far more
+  // output than the dream extract phase (~1200 tokens). Parse failures on this path are
+  // often a truncated reply, so the diary reads its own DIARY_MAX_TOKENS first and floors
+  // at 4000 — it must not inherit a low shared DREAM_MAX_TOKENS tuned for extraction.
+  const DIARY_MIN_TOKENS = 4000;
+  const parsed = Number(
+    env.DIARY_MAX_TOKENS || env.DREAM_MAX_TOKENS || env.DAILY_DIGEST_MAX_TOKENS || 6000
+  );
+  const numeric = Number.isFinite(parsed) ? parsed : 6000;
+  return Math.min(Math.max(Math.floor(numeric), DIARY_MIN_TOKENS), 8000);
 }
 
 export function normalizeDiaryWriterResult(value: unknown): DiaryWriterModelResult {
@@ -197,6 +204,16 @@ async function callDiaryWriterModel(
   const model = readDiaryModel(env);
   const maxTokens = readDiaryMaxTokens(env);
 
+  // One strict-retry: if the first reply does not parse into a diary object (fenced/prose-wrapped
+  // beyond what the tolerant extractor can recover, or truncated), ask once more with a hard
+  // "return only a single JSON object" instruction before giving up with model_invalid_json.
+  const STRICT_SUFFIX =
+    "\n\n重要：只返回一个 JSON 对象，不要 markdown 代码块、不要 ```，不要任何解释或前后文，第一个字符必须是 {，最后一个字符必须是 }。";
+  const attempts: Array<{ prompt: string; strict: boolean }> = [
+    { prompt, strict: false },
+    { prompt: `${prompt}${STRICT_SUFFIX}`, strict: true }
+  ];
+
   const startedAt = Date.now();
   console.log("diary_writer: calling model", {
     date: meta.dateLabel,
@@ -206,43 +223,53 @@ async function callDiaryWriterModel(
     maxTokens
   });
 
-  let text: string;
-  try {
-    text = await callModelWithRetry(env, {
-      model,
-      prompt,
-      maxTokens,
-      logPrefix: "diary_writer",
-      logMeta: { date: meta.dateLabel }
-    });
-  } catch (error) {
-    return {
-      result: null,
-      reason: "model_error",
-      model,
-      status: error instanceof ModelCallError ? error.status : undefined
-    };
-  }
+  let lastReason: "model_error" | "model_invalid_json" = "model_invalid_json";
+  let lastStatus: number | undefined;
 
-  const elapsedMs = Date.now() - startedAt;
-  const json = extractJsonObject(text);
-  const result = normalizeDiaryWriterResult(json);
-  if (!result) {
+  for (const attempt of attempts) {
+    let text: string;
+    try {
+      text = await callModelWithRetry(env, {
+        model,
+        prompt: attempt.prompt,
+        maxTokens,
+        logPrefix: "diary_writer",
+        logMeta: { date: meta.dateLabel, strict: attempt.strict }
+      });
+    } catch (error) {
+      // A transport/HTTP error is not a parse failure — the strict re-ask cannot help, so stop here.
+      return {
+        result: null,
+        reason: "model_error",
+        model,
+        status: error instanceof ModelCallError ? error.status : undefined
+      };
+    }
+
+    const json = extractFirstJsonObject(text);
+    const result = normalizeDiaryWriterResult(json);
+    if (result) {
+      console.log("diary_writer: model returned valid JSON", {
+        date: meta.dateLabel,
+        model,
+        elapsedMs: Date.now() - startedAt,
+        strict: attempt.strict
+      });
+      return { result, model };
+    }
+
+    lastReason = "model_invalid_json";
     console.error("diary_writer: model returned invalid JSON", {
       date: meta.dateLabel,
       model,
-      elapsedMs,
-      contentChars: text.length
+      elapsedMs: Date.now() - startedAt,
+      contentChars: text.length,
+      strict: attempt.strict,
+      willRetryStrict: !attempt.strict
     });
-    return { result: null, reason: "model_invalid_json", model };
   }
 
-  console.log("diary_writer: model returned valid JSON", {
-    date: meta.dateLabel,
-    model,
-    elapsedMs
-  });
-  return { result, model };
+  return { result: null, reason: lastReason, model, status: lastStatus };
 }
 
 export async function runDiaryWriter(
@@ -342,9 +369,43 @@ export async function runDiaryWriterNightly(env: Env, namespace: string): Promis
   const { startIso, endIso } = getDateRangeForLabel(dateLabel, timeZone);
   const cursor = await readDreamCursorValue(env.DB, { namespace, dateLabel });
   const cursorState = readDailyCursor(cursor, startIso, endIso);
-  if (!cursorState.done) {
+  if (!cursorState.done && !(await isDayFullyProcessed(env.DB, { namespace, startIso, endIso, cursorState }))) {
     return { enabled: true, date: dateLabel, ran: false, reason: "dream_not_done" };
   }
 
   return runDiaryWriter(env, namespace, dateLabel);
+}
+
+/**
+ * A day is ready for the diary once dream has consumed every message in it, even when the
+ * `done:` marker was never written. Dream advances the daily cursor only after a *successful*
+ * batch; if a later batch's model call fails (e.g. returns invalid JSON — the 2026-10-18 case),
+ * the orchestrator returns early WITHOUT advancing the cursor, so the cursor stays a raw
+ * "<iso>#msg_..." value with no `done:` prefix forever and the diary is blocked by
+ * `dream_not_done` on every subsequent night. The diary writer reads raw messages directly and
+ * does not depend on dream's extraction output, so it is safe to run once there is nothing left
+ * for dream to process. We probe for a single message strictly after the cursor position within
+ * the day: none remaining means the day is fully processed.
+ */
+async function isDayFullyProcessed(
+  db: D1Database,
+  input: {
+    namespace: string;
+    startIso: string;
+    endIso: string;
+    cursorState: { after: string | null; afterId: string | null };
+  }
+): Promise<boolean> {
+  const remaining = await listMessagesByNamespaceInRange(db, {
+    namespace: input.namespace,
+    startCreatedAt: input.startIso,
+    endCreatedAt: input.endIso,
+    afterCreatedAt: input.cursorState.after,
+    afterId: input.cursorState.afterId,
+    limit: 1
+  });
+  // A day that was never touched by dream (cursor null -> after null) and has messages is NOT
+  // "fully processed" — that is a genuinely unprocessed day, left to the normal dream path.
+  if (!input.cursorState.after) return false;
+  return remaining.length === 0;
 }
