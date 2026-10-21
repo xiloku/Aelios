@@ -75,6 +75,11 @@ export interface Env {
   // the dream extract phase, so it reads this before the shared DREAM_MAX_TOKENS and floors
   // at 4000 to avoid token-limit truncation (the 2026-10-18 model_invalid_json cause).
   DIARY_MAX_TOKENS?: string;
+  // Large-day map-reduce chunk size (messages per chunk). A day with more than ~one chunk's
+  // worth of messages is summarized in bounded chunks then merged, so no single call to
+  // @cf/openai/gpt-oss-120b sends the whole busy day at once (the model_error / stall cause
+  // on 75-190 message days). Default 40, clamped 20-80.
+  DIARY_CHUNK_SIZE?: string;
   DEDUP_COSINE?: string;
   // 每天夜整完用 Cloudflare 的 clef 审候选，只分记住和放下。默认开，off/false 关。
   CLEF_AUTO_REVIEW?: string;

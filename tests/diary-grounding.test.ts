@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { formatBootStable } from "../src/assembler/types";
-import { buildDiaryWriterPrompt, normalizeDiaryWriterResult } from "../src/memory/diaryWriter";
+import { buildDiaryChunkPrompt, buildDiaryMergePrompt, buildDiaryWriterPrompt, normalizeDiaryWriterResult } from "../src/memory/diaryWriter";
 import { buildWeeklyRollupPrompt } from "../src/memory/weeklyRollup";
 import { buildMonthlyRollupPrompt } from "../src/memory/monthlyRollup";
 import { groundedSourceIds, IMPRESSION_DISCLAIMER } from "../src/memory/impression";
@@ -102,4 +102,94 @@ test("boot impressions carry the issue #35 disclaimer", () => {
   });
   assert.match(text, new RegExp(IMPRESSION_DISCLAIMER));
   assert.match(text, /聊了缓存/);
+});
+
+const chunkMessages = [
+  {
+    id: "msg_a",
+    conversation_id: "c1",
+    namespace: "ain",
+    role: "user" as const,
+    content: "今天有点累",
+    source: "chat",
+    created_at: "2026-10-19T01:00:00.000Z"
+  },
+  {
+    id: "msg_b",
+    conversation_id: "c1",
+    namespace: "ain",
+    role: "assistant" as const,
+    content: "我在这里",
+    source: "chat",
+    created_at: "2026-10-19T01:05:00.000Z"
+  }
+];
+
+test("large-day chunk prompt grounds quotes on ids but omits the eight-section format", () => {
+  const prompt = buildDiaryChunkPrompt({
+    dateLabel: "2026-10-19",
+    chunk: chunkMessages,
+    index: 0,
+    total: 3,
+    speakers: null
+  });
+  // It is a MAP note, not the final diary: it carries grounding + chat-material rules…
+  assert.match(prompt, /notes/);
+  assert.match(prompt, /编造的 id 无效/);
+  assert.match(prompt, /第 1\/3 段/);
+  assert.match(prompt, /\[msg_a\]/);
+  // …but NOT the eight-section diary structure (that belongs only to the merge).
+  assert.doesNotMatch(prompt, /现在的温度/);
+  assert.doesNotMatch(prompt, /source_message_ids/);
+});
+
+test("large-day merge prompt keeps the eight-section diary format and consumes chunk notes", () => {
+  const prompt = buildDiaryMergePrompt({
+    dateLabel: "2026-10-19",
+    notes: [
+      {
+        index: 0,
+        total: 2,
+        startedAt: "2026-10-19T01:00:00.000Z",
+        endedAt: "2026-10-19T01:30:00.000Z",
+        messageIds: ["msg_a", "msg_b"],
+        text: "她说累了[msg_a]。"
+      },
+      {
+        index: 1,
+        total: 2,
+        startedAt: "2026-10-19T02:00:00.000Z",
+        endedAt: "2026-10-19T02:30:00.000Z",
+        messageIds: ["msg_c"],
+        text: "后来一起安静待着[msg_c]。"
+      }
+    ],
+    speakers: null
+  });
+  // The eight-section window-diary format is preserved verbatim from DIARY_STYLE_RULES.
+  assert.match(prompt, /现在的温度/);
+  assert.match(prompt, /未完成的事/);
+  assert.match(prompt, /source_message_ids/);
+  // It merges the ordered chunk notes (with their grounding ids), not raw transcript.
+  assert.match(prompt, /第 1\/2 段/);
+  assert.match(prompt, /第 2\/2 段/);
+  assert.match(prompt, /\[msg_a\]/);
+  assert.match(prompt, /\[msg_c\]/);
+  // It must not invent material beyond the notes.
+  assert.match(prompt, /不要新增笔记里没有的/);
+});
+
+test("named speakers flow into chunk and merge prompts", () => {
+  const speakers = { userName: "小南", assistantName: "小北" };
+  const chunk = buildDiaryChunkPrompt({ dateLabel: "2026-10-19", chunk: chunkMessages, index: 0, total: 2, speakers });
+  assert.match(chunk, /用户是小南，助手是小北/);
+  assert.match(chunk, /\[小南\]/);
+  const merge = buildDiaryMergePrompt({
+    dateLabel: "2026-10-19",
+    notes: [
+      { index: 0, total: 1, startedAt: "", endedAt: "", messageIds: ["msg_a"], text: "小南说累了[msg_a]。" }
+    ],
+    speakers
+  });
+  assert.match(merge, /用户是小南，助手是小北/);
 });
