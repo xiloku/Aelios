@@ -1,6 +1,7 @@
 import { listActiveFactKeys, listDailyLogsInRange } from "../db/v2";
 import { loadConfig, speakersForNamespace, type DreamSpeakers } from "../gateway/config";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
+import { buildModelChain } from "../utils/modelCall";
 import type { Env, MessageRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { clampScore, extractJsonObject, readString, readStringArray } from "../utils/parse";
 import { CHAT_MATERIAL_RULES, clipMiddle, escapeChatTags, formatChatMaterial } from "./chatMaterial";
@@ -194,17 +195,56 @@ async function callDreamExtractModel(
   speakers: DreamSpeakers | null,
   background: DiaryBackground[]
 ): Promise<DreamExtractModelResult> {
-  const model = readDreamExtractModel(env);
-  if (!model) return { memories: [], reason: "missing_model" };
+  const primary = readDreamExtractModel(env);
+  if (!primary) return { memories: [], reason: "missing_model" };
 
+  const prompt = buildDreamExtractPrompt(messages, existingFactKeys, speakers, background);
+  const maxTokens = readPositiveInt(env.DREAM_MAX_TOKENS, DEFAULT_DREAM_EXTRACT_MAX_TOKENS, 4000);
+
+  // Fall back across the chain on a 5xx / timeout / model_error from the primary (the burst-500
+  // failure mode of @cf/openai/gpt-oss-120b). model_invalid_json is a parse problem, not a
+  // transport failure, so it does NOT advance the chain.
+  const models = buildModelChain(primary, env);
+  let last: DreamExtractModelResult = { memories: [], model: primary, reason: "model_error" };
+
+  for (let i = 0; i < models.length; i += 1) {
+    const model = models[i];
+    const isLast = i === models.length - 1;
+    const result = await callDreamExtractModelOnce(env, { model, prompt, maxTokens });
+    if (result.reason !== "model_error" || !result.reason) {
+      if (i > 0 && !result.reason) {
+        console.warn("dream extract: fallback model produced memories", { model, chainIndex: i });
+      }
+      return result;
+    }
+    last = result;
+    if (!isLast) {
+      console.warn("dream extract: model_error, advancing to next fallback", {
+        model,
+        status: result.status,
+        chainIndex: i,
+        chainLength: models.length
+      });
+    }
+  }
+
+  return last;
+}
+
+/** One model's single attempt for the dream extract call. */
+async function callDreamExtractModelOnce(
+  env: Env,
+  input: { model: string; prompt: string; maxTokens: number }
+): Promise<DreamExtractModelResult> {
+  const { model, prompt, maxTokens } = input;
   const request: OpenAIChatRequest = {
     model,
     messages: [
       { role: "system", content: "你是严格的 JSON 生成器。你只输出 JSON。" },
-      { role: "user", content: buildDreamExtractPrompt(messages, existingFactKeys, speakers, background) }
+      { role: "user", content: prompt }
     ],
     temperature: 0,
-    max_tokens: readPositiveInt(env.DREAM_MAX_TOKENS, DEFAULT_DREAM_EXTRACT_MAX_TOKENS, 4000),
+    max_tokens: maxTokens,
     response_format: { type: "json_object" },
     stream: false
   };

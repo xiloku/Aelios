@@ -1,7 +1,7 @@
 import { listMessagesByNamespaceInRange } from "../db/messages";
 import { getDailyLog, getWeeklyLog, upsertDailyLog } from "../db/v2";
 import type { Env, MessageRecord } from "../types";
-import { callModelWithRetry, ModelCallError, readModelName } from "../utils/modelCall";
+import { buildModelChain, callModelChainWithRetry, ModelCallError, readModelName } from "../utils/modelCall";
 import {
   getDateRangeForLabel,
   getTargetDigestDateLabel,
@@ -232,18 +232,19 @@ async function callDiaryWriterModel(
   meta: { dateLabel: string; messageCount: number; messages?: MessageRecord[]; speakers?: DreamSpeakers | null }
 ): Promise<DiaryWriterModelCallResult> {
   const model = readDiaryModel(env);
+  const models = buildModelChain(model, env);
   const maxTokens = readDiaryMaxTokens(env);
   const messages = meta.messageCount;
   const chunkSize = readDiaryChunkSize(env);
 
   // Small / normal days: the single-call path is unchanged (cheaper, higher quality).
   if (messages <= chunkSize + DIARY_CHUNK_THRESHOLD_SLACK) {
-    return runDiaryPromptAttempts(env, prompt, { model, maxTokens, dateLabel: meta.dateLabel });
+    return runDiaryPromptAttempts(env, prompt, { models, maxTokens, dateLabel: meta.dateLabel });
   }
 
   // Large day: summarize in bounded chunks, then merge chunk notes into the final diary.
   // Any map-phase failure falls back to the single call so behaviour never regresses.
-  return callChunkedDiaryWriterModel(env, { model, maxTokens, chunkSize, singleCallPrompt: prompt }, meta);
+  return callChunkedDiaryWriterModel(env, { models, maxTokens, chunkSize, singleCallPrompt: prompt }, meta);
 }
 
 /**
@@ -254,9 +255,10 @@ async function callDiaryWriterModel(
 async function runDiaryPromptAttempts(
   env: Env,
   prompt: string,
-  opts: { model: string; maxTokens: number; dateLabel: string }
+  opts: { models: string[]; maxTokens: number; dateLabel: string }
 ): Promise<DiaryWriterModelCallResult> {
-  const { model, maxTokens, dateLabel } = opts;
+  const { models, maxTokens, dateLabel } = opts;
+  const primaryModel = models[0];
 
   // One strict-retry: if the first reply does not parse into a diary object (fenced/prose-wrapped
   // beyond what the tolerant extractor can recover, or truncated), ask once more with a hard
@@ -271,50 +273,56 @@ async function runDiaryPromptAttempts(
   const startedAt = Date.now();
   console.log("diary_writer: calling model", {
     date: dateLabel,
-    model,
+    models,
     promptChars: prompt.length,
     maxTokens
   });
 
   let lastReason: "model_error" | "model_invalid_json" = "model_invalid_json";
   let lastStatus: number | undefined;
+  // The model that produced the last (invalid-JSON) text, so model_invalid_json reports the
+  // actual author rather than always the primary.
+  let lastModel = primaryModel;
 
   for (const attempt of attempts) {
     let text: string;
+    let producedModel: string;
     try {
-      text = await callModelWithRetry(env, {
-        model,
+      // Fall back across the chain on a 5xx/timeout from the primary; each model gets its own retry.
+      ({ text, model: producedModel } = await callModelChainWithRetry(env, {
+        models,
         prompt: attempt.prompt,
         maxTokens,
         logPrefix: "diary_writer",
         logMeta: { date: dateLabel, strict: attempt.strict }
-      });
+      }));
     } catch (error) {
-      // A transport/HTTP error is not a parse failure — the strict re-ask cannot help, so stop here.
+      // The whole chain failed with a transport/HTTP error — a parse re-ask cannot help, so stop here.
       return {
         result: null,
         reason: "model_error",
-        model,
+        model: primaryModel,
         status: error instanceof ModelCallError ? error.status : undefined
       };
     }
 
+    lastModel = producedModel;
     const json = extractFirstJsonObject(text);
     const result = normalizeDiaryWriterResult(json);
     if (result) {
       console.log("diary_writer: model returned valid JSON", {
         date: dateLabel,
-        model,
+        model: producedModel,
         elapsedMs: Date.now() - startedAt,
         strict: attempt.strict
       });
-      return { result, model };
+      return { result, model: producedModel };
     }
 
     lastReason = "model_invalid_json";
     console.error("diary_writer: model returned invalid JSON", {
       date: dateLabel,
-      model,
+      model: producedModel,
       elapsedMs: Date.now() - startedAt,
       contentChars: text.length,
       strict: attempt.strict,
@@ -322,7 +330,7 @@ async function runDiaryPromptAttempts(
     });
   }
 
-  return { result: null, reason: lastReason, model, status: lastStatus };
+  return { result: null, reason: lastReason, model: lastModel, status: lastStatus };
 }
 
 interface DiaryChunkNote {
@@ -343,7 +351,7 @@ interface DiaryChunkNote {
 async function summarizeDiaryChunk(
   env: Env,
   input: {
-    model: string;
+    models: string[];
     dateLabel: string;
     chunk: MessageRecord[];
     index: number;
@@ -351,18 +359,19 @@ async function summarizeDiaryChunk(
     speakers: DreamSpeakers | null;
   }
 ): Promise<DiaryChunkNote | null> {
-  const { model, dateLabel, chunk, index, total, speakers } = input;
+  const { models, dateLabel, chunk, index, total, speakers } = input;
   const prompt = buildDiaryChunkPrompt({ dateLabel, chunk, index, total, speakers });
 
   let text: string;
   try {
-    text = await callModelWithRetry(env, {
-      model,
+    // Chunk summary also falls back across the chain on a 5xx/timeout from the primary.
+    ({ text } = await callModelChainWithRetry(env, {
+      models,
       prompt,
       maxTokens: DIARY_CHUNK_SUMMARY_MAX_TOKENS,
       logPrefix: "diary_writer_chunk",
       logMeta: { date: dateLabel, chunk: `${index + 1}/${total}` }
-    });
+    }));
   } catch (error) {
     console.error("diary_writer_chunk: model failed", {
       date: dateLabel,
@@ -401,15 +410,15 @@ async function summarizeDiaryChunk(
  */
 async function callChunkedDiaryWriterModel(
   env: Env,
-  cfg: { model: string; maxTokens: number; chunkSize: number; singleCallPrompt: string },
+  cfg: { models: string[]; maxTokens: number; chunkSize: number; singleCallPrompt: string },
   meta: { dateLabel: string; messageCount: number; messages?: MessageRecord[]; speakers?: DreamSpeakers | null }
 ): Promise<DiaryWriterModelCallResult> {
-  const { model, maxTokens, chunkSize, singleCallPrompt } = cfg;
+  const { models, maxTokens, chunkSize, singleCallPrompt } = cfg;
   const messages = meta.messages ?? [];
   const chunks = chunkMessages(messages, chunkSize);
 
   if (chunks.length <= 1 || messages.length === 0) {
-    return runDiaryPromptAttempts(env, singleCallPrompt, { model, maxTokens, dateLabel: meta.dateLabel });
+    return runDiaryPromptAttempts(env, singleCallPrompt, { models, maxTokens, dateLabel: meta.dateLabel });
   }
 
   console.log("diary_writer: large day, chunking", {
@@ -422,7 +431,7 @@ async function callChunkedDiaryWriterModel(
   const notes: DiaryChunkNote[] = [];
   for (let i = 0; i < chunks.length; i += 1) {
     const note = await summarizeDiaryChunk(env, {
-      model,
+      models,
       dateLabel: meta.dateLabel,
       chunk: chunks[i],
       index: i,
@@ -435,13 +444,13 @@ async function callChunkedDiaryWriterModel(
         date: meta.dateLabel,
         chunk: `${i + 1}/${chunks.length}`
       });
-      return runDiaryPromptAttempts(env, singleCallPrompt, { model, maxTokens, dateLabel: meta.dateLabel });
+      return runDiaryPromptAttempts(env, singleCallPrompt, { models, maxTokens, dateLabel: meta.dateLabel });
     }
     notes.push(note);
   }
 
   const mergePrompt = buildDiaryMergePrompt({ dateLabel: meta.dateLabel, notes, speakers: meta.speakers ?? null });
-  return runDiaryPromptAttempts(env, mergePrompt, { model, maxTokens, dateLabel: meta.dateLabel });
+  return runDiaryPromptAttempts(env, mergePrompt, { models, maxTokens, dateLabel: meta.dateLabel });
 }
 
 /**
