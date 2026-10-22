@@ -13,6 +13,22 @@ export const MODEL_RETRY_BACKOFF_MS = [2000, 8000];
 
 const DEFAULT_SYSTEM_PROMPT = "你是严格的 JSON 生成器。你只输出 JSON，不要输出思考过程。";
 
+/**
+ * DeepSeek V4 models (deepseek-flash / deepseek-v4-pro, reached via the `deepseek/` author
+ * prefix through AI Gateway BYOK) run with thinking mode ENABLED BY DEFAULT at `high` effort.
+ * For our nightly JSON-generator calls (diary writer, dream extract, rollups) that means the
+ * whole `max_tokens` budget is spent on `reasoning_content` and `content` comes back empty with
+ * `finish_reason:length` — surfacing as `model_invalid_json` (observed 2026-10-22, Retry 3).
+ *
+ * The OpenAI-format control to turn thinking off is `reasoning_effort:"none"` (per DeepSeek's
+ * official thinking-mode guide: effort `none` disables thinking mode). It is a plain top-level
+ * field, so it survives the compat adapter (only Anthropic-native `thinking` is stripped there).
+ * We add it ONLY for `deepseek/` models; every other model's request is byte-identical to before.
+ */
+function isDeepSeekModel(model: string): boolean {
+  return model.trim().toLowerCase().startsWith("deepseek/");
+}
+
 export interface ModelCallRequest {
   model: string;
   prompt: string;
@@ -126,6 +142,7 @@ export async function callModelWithRetry(env: Env, req: ModelCallRequest): Promi
     ],
     temperature: 0,
     ...(req.maxTokens !== undefined ? { max_tokens: req.maxTokens } : {}),
+    ...(isDeepSeekModel(req.model) ? { reasoning_effort: "none" } : {}),
     response_format: { type: "json_object" },
     stream: false
   };
