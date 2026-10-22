@@ -80,6 +80,11 @@ export interface Env {
   // @cf/openai/gpt-oss-120b sends the whole busy day at once (the model_error / stall cause
   // on 75-190 message days). Default 40, clamped 20-80.
   DIARY_CHUNK_SIZE?: string;
+  // Ordered comma-separated fallback chain for the diary writer and dream (nightly extraction)
+  // model calls. On a 5xx / timeout / model_error from the primary (DREAM_MODEL/DIARY_MODEL),
+  // the SAME call is retried with the next model here (each at most once, after its own retry).
+  // Blank falls back to the built-in DEFAULT_MODEL_FALLBACKS. Same `workers-ai/@cf/...` form.
+  MODEL_FALLBACKS?: string;
   DEDUP_COSINE?: string;
   // 每天夜整完用 Cloudflare 的 clef 审候选，只分记住和放下。默认开，off/false 关。
   CLEF_AUTO_REVIEW?: string;

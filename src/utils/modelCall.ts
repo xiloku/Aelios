@@ -47,6 +47,63 @@ export function readModelName(env: Env, keys: string[], fallback: string): strin
   return fallback;
 }
 
+/**
+ * Default fallback chain for the diary writer and dream (nightly extraction) model calls.
+ * The primary (@cf/openai/gpt-oss-120b) returns HTTP 500 in bursts regardless of input size,
+ * so on a 5xx / timeout / model_error we retry the SAME call with the next model here. These
+ * are all currently-available Workers AI chat models with good Chinese writing and enough
+ * context for a ~40-message chunk. The primary itself is NOT listed — it is always tried first
+ * by the caller; this is only the ordered list of what to fall back TO. Overridable at runtime
+ * via the MODEL_FALLBACKS setting (comma-separated, same `workers-ai/@cf/...` form).
+ */
+export const DEFAULT_MODEL_FALLBACKS = [
+  "workers-ai/@cf/qwen/qwen3-30b-a3b-fp8",
+  "workers-ai/@cf/zai-org/glm-4.7-flash",
+  "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+];
+
+/**
+ * Ordered fallback model list. Reads the MODEL_FALLBACKS setting (comma-separated); blanks and
+ * duplicates are dropped. Falls back to DEFAULT_MODEL_FALLBACKS when unset/empty so the chain
+ * works out of the box. Returns a fresh array the caller may filter against its primary.
+ */
+export function readModelFallbacks(env: Env): string[] {
+  const raw = env.MODEL_FALLBACKS;
+  if (typeof raw === "string" && raw.trim()) {
+    const parsed = raw
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+    const unique: string[] = [];
+    const seen = new Set<string>();
+    for (const entry of parsed) {
+      if (!seen.has(entry)) {
+        seen.add(entry);
+        unique.push(entry);
+      }
+    }
+    if (unique.length > 0) return unique;
+  }
+  return [...DEFAULT_MODEL_FALLBACKS];
+}
+
+/**
+ * Build the ordered model chain to try: the primary first, then each configured fallback that
+ * is not already the primary. Deduped, order-preserving. A single-element result (primary only)
+ * means no distinct fallback is configured and behaviour is identical to the pre-fallback path.
+ */
+export function buildModelChain(primary: string, env: Env): string[] {
+  const chain = [primary];
+  const seen = new Set<string>([primary]);
+  for (const candidate of readModelFallbacks(env)) {
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      chain.push(candidate);
+    }
+  }
+  return chain;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -128,4 +185,67 @@ export async function callModelWithRetry(env: Env, req: ModelCallRequest): Promi
   }
 
   throw new ModelCallError("model call failed after retries");
+}
+
+export interface ModelChainCallRequest extends Omit<ModelCallRequest, "model"> {
+  /** Ordered models to try; each gets ONE full callModelWithRetry cycle before the next. */
+  models: string[];
+}
+
+export interface ModelChainResult {
+  /** Raw model text (content, falling back to reasoning_content). */
+  text: string;
+  /** The model that actually produced the text — store it so stats show which one ran. */
+  model: string;
+}
+
+/**
+ * Try an ordered chain of models for ONE logical call. Each model gets a full
+ * `callModelWithRetry` cycle (its existing per-model backoff retry); on a `ModelCallError`
+ * — the transport / 5xx / 429 class that the primary (@cf/openai/gpt-oss-120b) throws in
+ * bursts — we advance to the next model in the chain. Bounded: each model is tried at most
+ * once (after its own existing retry). The last model's error propagates if the whole chain
+ * is exhausted, so callers keep their current `model_error` handling unchanged. Returns the
+ * text AND the model that produced it so the diary/dream stats can record the real author.
+ *
+ * A single-element `models` behaves exactly like `callModelWithRetry` (plus the model in the
+ * return value), so wiring this in never changes behaviour when no distinct fallback exists.
+ */
+export async function callModelChainWithRetry(env: Env, req: ModelChainCallRequest): Promise<ModelChainResult> {
+  const { models, ...rest } = req;
+  if (models.length === 0) throw new ModelCallError("model chain is empty");
+  const logPrefix = rest.logPrefix ?? "model_call";
+  let lastError: unknown;
+
+  for (let i = 0; i < models.length; i += 1) {
+    const model = models[i];
+    const isLast = i === models.length - 1;
+    try {
+      const text = await callModelWithRetry(env, { ...rest, model });
+      if (i > 0) {
+        console.warn(`${logPrefix}: fallback model produced output`, {
+          ...rest.logMeta,
+          model,
+          chainIndex: i,
+          chainLength: models.length
+        });
+      }
+      return { text, model };
+    } catch (error) {
+      lastError = error;
+      // ModelCallError is the retriable transport/5xx/429 class — advance to the next model.
+      // Any other thrown error is also treated as a failed attempt for this model.
+      console.error(`${logPrefix}: model failed, ${isLast ? "chain exhausted" : "advancing to next fallback"}`, {
+        ...rest.logMeta,
+        model,
+        chainIndex: i,
+        chainLength: models.length,
+        status: error instanceof ModelCallError ? error.status : undefined
+      });
+      if (isLast) throw error;
+    }
+  }
+
+  // Unreachable (the last iteration always returns or throws), but keeps the type checker happy.
+  throw (lastError instanceof Error ? lastError : new ModelCallError("model chain failed"));
 }

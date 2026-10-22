@@ -4,6 +4,7 @@ import { extractJsonObject } from "../../utils/parse";
 import { CHAT_MATERIAL_RULES } from "../chatMaterial";
 import { extractDreamMemoriesFromMessages } from "../dreamExtract";
 import { readDreamMaxTokens, readDreamModel } from "../dreamEnv";
+import { buildModelChain } from "../../utils/modelCall";
 import type { ExtractedMemory } from "../extract";
 import { loadConfig, speakersForNamespace, type DreamSpeakers } from "../../gateway/config";
 import {
@@ -109,12 +110,50 @@ export async function callDigestModel(
   prompt: string,
   meta: { dateLabel: string; messageCount: number; memoryCount: number; hasMore: boolean }
 ): Promise<DigestModelCallResult> {
-  const model = readDreamModel(env);
-  if (!model) {
+  const primary = readDreamModel(env);
+  if (!primary) {
     console.error("dream: missing model");
     return { digest: null, reason: "missing_model" };
   }
 
+  // Fall back across the chain on a 5xx / timeout / model_error from the primary (the burst-500
+  // failure mode of @cf/openai/gpt-oss-120b). A model_invalid_json is a parse problem, not a
+  // transport failure, so it does NOT advance the chain — the existing shrink-retry handles it.
+  const models = buildModelChain(primary, env);
+  let last: DigestModelCallResult = { digest: null, reason: "model_error", model: primary };
+
+  for (let i = 0; i < models.length; i += 1) {
+    const model = models[i];
+    const isLast = i === models.length - 1;
+    const result = await callDigestModelOnce(env, prompt, model, meta);
+    if (result.digest || result.reason !== "model_error") {
+      if (i > 0 && result.digest) {
+        console.warn("dream: fallback model produced digest", { date: meta.dateLabel, model, chainIndex: i });
+      }
+      return result;
+    }
+    last = result;
+    if (!isLast) {
+      console.warn("dream: model_error, advancing to next fallback", {
+        date: meta.dateLabel,
+        model,
+        status: result.status,
+        chainIndex: i,
+        chainLength: models.length
+      });
+    }
+  }
+
+  return last;
+}
+
+/** One model's full attempt+backoff cycle for the dream digest call. */
+async function callDigestModelOnce(
+  env: Env,
+  prompt: string,
+  model: string,
+  meta: { dateLabel: string; messageCount: number; memoryCount: number; hasMore: boolean }
+): Promise<DigestModelCallResult> {
   const request: OpenAIChatRequest = {
     model,
     messages: [

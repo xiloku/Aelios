@@ -52,6 +52,7 @@ export const SETTINGS: SettingSpec[] = [
   { group: "Dream 与日记", name: "DIARY_MODEL", label: "日记和月记用的模型", hint: "留空回落 DREAM_MODEL" },
   { group: "Dream 与日记", name: "DIARY_MAX_TOKENS", label: "日记单轮输出上限", hint: "留空按 6000（最低 4000，上限 8000）。八段叙事日记比夜整抽取长得多，太低会被截断成非法 JSON" },
   { group: "Dream 与日记", name: "DIARY_CHUNK_SIZE", label: "日记大日分段条数", hint: "留空按 40（范围 20-80）。消息多于约一段时，先分段压成笔记再合成整天日记，避免把一整个忙碌的日子一次塞给模型导致 500 或超时" },
+  { group: "Dream 与日记", name: "MODEL_FALLBACKS", label: "日记/夜整模型回退链", hint: "逗号分隔，按顺序排列。主模型（DREAM_MODEL/DIARY_MODEL）返回 5xx/超时/model_error 时，同一调用改用链里的下一个模型（每个至多试一次）。留空用内置默认链（Qwen3-30B、GLM-4.7-flash、Llama-3.3-70B）。写成 workers-ai/@cf/... 形式" },
   { group: "Dream 与日记", name: "SUMMARY_MODEL", label: "摘要模型的最后兜底", hint: "DREAM_MODEL 和旧名 DAILY_DIGEST_MODEL 都没填时，摘要链路用它" },
   { group: "Dream 与日记", name: "ENABLE_WEEKLY_ROLLUP", label: "周记汇总", hint: "默认开。关掉不生成 weekly_log，命中也就没有周块可附", kind: "switch", defaultOn: true },
   { group: "Dream 与日记", name: "ENABLE_MONTHLY_ROLLUP", label: "月记汇总", hint: "默认开。关掉不生成 monthly_log", kind: "switch", defaultOn: true },
