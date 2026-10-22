@@ -126,3 +126,40 @@ test("single-element chain behaves like a plain call and reports the model", asy
   });
   assert.equal(model, "only");
 });
+
+/**
+ * DeepSeek V4 runs thinking mode ON by default, which drains the whole token budget into
+ * reasoning_content and leaves content empty (finish_reason:length -> model_invalid_json).
+ * callModelWithRetry must send reasoning_effort:"none" for deepseek/* models to disable it,
+ * and must NOT add that field for any other model (byte-identical request as before).
+ */
+function stubFetchCapturingBodies(status: number, text: string): Array<Record<string, unknown>> {
+  const bodies: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+    bodies.push(init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : {});
+    return new Response(okBody(text), { status, headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch;
+  return bodies;
+}
+
+test("deepseek/* request carries reasoning_effort:\"none\" (thinking disabled)", async () => {
+  const bodies = stubFetchCapturingBodies(200, "{}");
+  await callModelChainWithRetry(BASE_ENV, {
+    models: ["deepseek/deepseek-flash"],
+    prompt: "hi",
+    backoffMs: []
+  });
+  assert.equal(bodies.length, 1);
+  assert.equal(bodies[0].reasoning_effort, "none");
+});
+
+test("non-deepseek request does NOT carry reasoning_effort", async () => {
+  const bodies = stubFetchCapturingBodies(200, "{}");
+  await callModelChainWithRetry(BASE_ENV, {
+    models: ["anthropic/claude-sonnet-4-5"],
+    prompt: "hi",
+    backoffMs: []
+  });
+  assert.equal(bodies.length, 1);
+  assert.equal("reasoning_effort" in bodies[0], false);
+});
