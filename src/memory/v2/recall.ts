@@ -32,6 +32,7 @@ import { expandRecallByRelations, isRelationExpansionEnabled } from "../relation
 import { fetchTriggeredRecords, isTriggerRecallEnabled, recallByTriggers } from "../triggers";
 import type { RelationExpansionMeta } from "../relations";
 import { loadSpontaneousForBoot } from "../perception";
+import { intimateRecallDownweight, isIntimateLayer, isIntimateQuery } from "../layers";
 import { getYesterdayDateLabel } from "../dreamDates";
 import { readDreamTimeZone } from "../dreamEnv";
 import { formatDateLabel } from "../../utils/time";
@@ -480,6 +481,11 @@ export async function runRecall(env: Env, input: RecallInput): Promise<RecallRes
   const windowMs = injectDecayWindowMs(env);
   const factor = injectDecayFactor(env);
   const boost = authoredBoost(env);
+  // 1b 分层降权：这轮不是在聊亲密时，亲密层记忆的排序分乘一个小系数 (默认 0.3) 自然靠后。
+  //   只压排序分 score，不碰 raw_score —— 闸四地板判 raw_score，所以降权不会把亲密记忆拉到地板下删掉，
+  //   没有更相关命中时它仍会浮现 (与闸三 last_injected 降权同构)。查询是亲密意图时 weight=1 (不降权)。
+  const queryIsIntimate = isIntimateQuery(query);
+  const intimateWeight = queryIsIntimate ? 1 : intimateRecallDownweight(env);
   const decayedIds: string[] = [];
   // #35: 记下每条命中的事实时间，末尾按周取块用。valid_as_of 是事实生效时间，
   // 比入库时间准；没有才退回 created_at。
@@ -491,11 +497,12 @@ export async function runRecall(env: Env, input: RecallInput): Promise<RecallRes
     if (factTime) timeByMemoryId.set(m.id, factTime);
     const rawScore = m.score ?? 0;
     const authored = m.authored_by ?? null;
+    const layerWeight = intimateWeight < 1 && isIntimateLayer(m.tags) ? intimateWeight : 1;
     return {
       id: m.id,
       content: m.content,
       type: m.type,
-      score: rawScore * decay * (authored ? boost : 1),
+      score: rawScore * decay * (authored ? boost : 1) * layerWeight,
       raw_score: rawScore,
       source_layer: "memory" as const,
       source: m.source ?? null,

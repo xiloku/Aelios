@@ -730,7 +730,8 @@ async function createApprovedMemoryFromCandidate(
   const hit = await findSimilarActiveMemory(env, {
     namespace: input.namespace,
     content: input.content,
-    excludeIds: input.excludeIds
+    excludeIds: input.excludeIds,
+    tags: input.tags
   });
   if (hit) {
     const result = await supersedeMemory(env, {
@@ -781,7 +782,24 @@ export async function handleMemoryCandidates(request: Request, env: Env): Promis
       status: readString(url.searchParams.get("status")) || "pending",
       limit: readPositiveInt(url.searchParams.get("limit"), 100, 200)
     });
-    return json({ data: rows.map(toCandidateApiRecord) });
+    // 1e 审核页并排显示：带 target_memory_id 的候选 (更新/删除提案，以及 dream_extract 的 dedup 配对)
+    //   附上那条被指认的老记忆正文 old_memory，让审核者不用再去翻 id。拉不到 (已删/不存在) 就留 null。
+    const targetIds = [...new Set(rows.map((r) => r.target_memory_id).filter((x): x is string => !!x))];
+    const oldMemoryById = new Map<string, string>();
+    await Promise.all(
+      targetIds.map(async (targetId) => {
+        const target = await env.DB.prepare("SELECT content FROM memories WHERE namespace = ? AND id = ?")
+          .bind(namespace, targetId)
+          .first<{ content: string }>();
+        if (target?.content) oldMemoryById.set(targetId, target.content);
+      })
+    );
+    return json({
+      data: rows.map((row) => ({
+        ...toCandidateApiRecord(row),
+        old_memory: row.target_memory_id ? oldMemoryById.get(row.target_memory_id) ?? null : null
+      }))
+    });
   }
 
   // 自动审核这几天替你定下的：GET /v1/candidates/decisions?days=7

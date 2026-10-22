@@ -86,8 +86,18 @@ export interface Env {
   // Blank falls back to the built-in DEFAULT_MODEL_FALLBACKS. Same `workers-ai/@cf/...` form.
   MODEL_FALLBACKS?: string;
   DEDUP_COSINE?: string;
-  // 每天夜整完用 Cloudflare 的 clef 审候选，只分记住和放下。默认开，off/false 关。
+  // --- 记忆分层 (memory layering) ---
+  // wake_up 开场 core (10 条) 里最多几条亲密层记忆，默认 2。腾出的名额按原排序补非亲密的下一名。
+  WAKE_CORE_INTIMATE_MAX?: string;
+  // 非亲密查询时亲密记忆排序分乘的系数，默认 0.3 (只压排序不碰地板，仍会偶尔浮现)。填 1 关闭。
+  RECALL_INTIMATE_DOWNWEIGHT?: string;
+  // 候选任一侧是亲密层时，去重所用的更严余弦阈值，默认 0.97 (不同亲密夜晚不被当重复合并)。
+  DEDUP_COSINE_INTIMATE?: string;
+  // 每天夜整完用 clef 审候选，只分记住和放下。默认开，off/false 关。
   CLEF_AUTO_REVIEW?: string;
+  // clef 代审用的模型。默认 deepseek/deepseek-flash (走 compat path)；留空回落它。
+  // Workers AI 免费额度用尽时 @cf/cloudflare/clef 会失败，改成可配并默认走 DeepSeek。
+  CANDIDATE_JUDGE_MODEL?: string;
   // clef 一晚最多审几条候选，默认 100。
   JUDGE_MAX_CANDIDATES?: string;
   DAILY_DIGEST_MAX_MESSAGES?: string;

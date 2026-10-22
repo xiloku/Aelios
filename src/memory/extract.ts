@@ -11,6 +11,9 @@ export interface ExtractedMemory {
   tags: string[];
   source_message_ids: string[];
   fact_key?: string;  // v2: model can provide fact_key for upsert dedup
+  // 记忆分层：模型额外输出的层名 (日常/关系/一起搓的/亲密)。规整后以 layer: tag 存进 tags，
+  // 给不出合法值时不打标 (保持向后兼容：旧调用方不传 layer，tags 原样)。见 memory/layers.ts。
+  layer?: string;
 }
 
 export interface MemoryExtractionResult {

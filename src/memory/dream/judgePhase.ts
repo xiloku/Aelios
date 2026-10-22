@@ -81,7 +81,8 @@ export async function queueDreamExtractedMemories(
       let decisionNote: string | null = null;
       const hit = await findSimilarActiveMemory(env, {
         namespace: input.namespace,
-        content: memory.content
+        content: memory.content,
+        tags: memory.tags
       });
       if (hit) {
         targetMemoryId = hit.memory.id;

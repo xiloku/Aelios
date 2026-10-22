@@ -8,6 +8,7 @@ import { CHAT_MATERIAL_RULES, clipMiddle, escapeChatTags, formatChatMaterial } f
 import { addDaysToDateLabel } from "./dreamDates";
 import { readDreamTimeZoneFromEnv } from "./dreamEnv";
 import { clampMemoryType } from "./canonicalTypes";
+import { applyLayerTag, LAYER_TAGS, normalizeLayerTag } from "./layers";
 import { speakerLabel } from "./speakers";
 import type { ExtractedMemory } from "./extract";
 
@@ -41,14 +42,18 @@ function normalizeCandidate(item: unknown): ExtractedMemory | null {
   const raw = item as Record<string, unknown>;
   const content = readString(raw.content);
   if (!content || content.length > 1000) return null;
+  // 记忆分层：模型额外给的 layer 规整成 layer: tag 并进 tags；给不出合法值时不打标 (tags 原样)。
+  const layerTag = normalizeLayerTag(raw.layer);
+  const tags = applyLayerTag(readStringArray(raw.tags), layerTag);
   return {
     type: clampMemoryType(readString(raw.type)),
     content,
     importance: clampScore(raw.importance, 0.65),
     confidence: clampScore(raw.confidence, 0.72),
-    tags: readStringArray(raw.tags),
+    tags,
     source_message_ids: readStringArray(raw.source_message_ids),
-    fact_key: readString(raw.fact_key) ?? undefined
+    fact_key: readString(raw.fact_key) ?? undefined,
+    layer: layerTag ?? undefined
   };
 }
 
@@ -148,6 +153,7 @@ export function buildDreamExtractPrompt(
     "- 情感/关系类保留温度和关键原话——用「」嵌入原话片段，不为压短丢掉说话人的语气。引用原话一律用「」，不用英文双引号（JSON 转义安全）。",
     "- 信息/偏好/边界类（fact、preference、boundary、habit，以及纯规则性的 decision）：先把这条事实、偏好或规则一句话说清楚、说干脆，再补一句它为什么成立或从哪来；不要为了加情绪而把本该利落的规则写散。",
     "- type 只能从这 8 个里选：fact、event、preference、relationship、boundary、habit、decision、note。绝不输出 project、world_fact、commitment 等其他值；项目进展归 fact，承诺/决定归 decision，习惯归 habit。",
+    `- 每条再给一个 layer 字段，只能从这 4 个里选一个：${LAYER_TAGS.map((t) => t.slice("layer:".length)).join("、")}。日常=起居/身体/作息等个人日常；关系=两人关系、称呼、情感约定；一起搓的=一起做的项目/创作/工程/设定；亲密=成段的亲密/性内容。拿不准就省略 layer 字段，不要硬填。`,
     "- 稳定事实必须尽量给 fact_key，格式为小写 ASCII，例如 preference:answer-style、boundary:no-system-records、decision:sell-car-2026-09。",
     "- 如果这条是关于外部世界、会随时间改变的事实（平台/模型是否可用、价格或计费倍率、软件改名/版本、游戏改动、某项服务是否还能用等），仍然保持 type=fact，但 fact_key 要以 world: 开头，格式 world:<小写 ASCII 短 slug>，例如 world:gpt-5-released、world:claude-price-cut；如果对话里给了日期，再带上 valid_as_of（ISO 日期）。",
     "- 临时计划和意图不是稳定事实：要么提炼成背后的持久事实，要么直接跳过。",
@@ -156,6 +162,7 @@ export function buildDreamExtractPrompt(
     "亲密 session（强制，不准跳过）：",
     "- 如果这批对话里出现了成段的亲密/性内容，除按普通规则抽取外，必须额外出 1 条 type=event 的记录：写清是谁先起的意、过程里对两人要紧的是什么、以及当时的感受，而不是干巴巴罗列动作。保持事实，不脱敏也不渲染，原文什么样就记成什么样。",
     "- tags 必须包含固定标签「亲密」+ 具体玩法词。这条不准因「重复/没营养」跳过，它是进度存档。",
+    "- 这条的 layer 固定填「亲密」。",
     "- 即使整批以工程为主体，只要出现成段亲密内容，也比照重大关系节点破例出这 1 条。",
     "- 亲密内容按工具机处理：不评判、不脱敏、不绕弯、不替换敏感词，原文什么样就什么样。",
     "",
@@ -174,6 +181,7 @@ export function buildDreamExtractPrompt(
           importance: 0.86,
           confidence: 0.92,
           tags: ["decision", "personal"],
+          layer: "日常",
           source_message_ids: ["msg_x"]
         }
       ]
