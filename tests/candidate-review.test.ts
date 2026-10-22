@@ -43,6 +43,8 @@ beforeEach(() => {
   calls = []; clefAnswers = [];
   env = { DB: db, CHATBOX_API_KEY: "owner-key", CLOUDFLARE_API_TOKEN: "cf-token",
     DREAM_MODEL: "workers-ai/@cf/openai/gpt-oss-120b",
+    // 代审模型默认已改成 deepseek compat (母帖 1f)；本套件测的是 clef 路径，显式钉住 clef。
+    CANDIDATE_JUDGE_MODEL: "@cf/cloudflare/clef",
     AI: { async run(model: string, input: any) {
       if (model.includes("bge")) return { data: [[0.1, 0.2, 0.3]] };
       if (model.includes("clef")) {

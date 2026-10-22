@@ -443,6 +443,18 @@ document.documentElement.dataset.theme = localStorage.getItem('aelios.admin.colo
             <template x-if="!candidate.editing">
               <p class="whitespace-pre-wrap text-sm leading-7 text-zinc-100" x-text="candidate.content"></p>
             </template>
+            <template x-if="candidate.old_memory">
+              <div class="mt-3 grid gap-3 md:grid-cols-2">
+                <div class="rounded-2xl border border-zinc-800 bg-[#0a0a0b] p-3">
+                  <div class="mb-1 text-xs font-semibold text-zinc-400">这条老记忆 <span class="font-mono text-zinc-500" x-text="candidate.target_memory_id"></span></div>
+                  <p class="whitespace-pre-wrap text-sm leading-7 text-zinc-300" x-text="candidate.old_memory"></p>
+                </div>
+                <div class="rounded-2xl border border-coral/40 bg-[#0a0a0b] p-3">
+                  <div class="mb-1 text-xs font-semibold text-coral">候选新内容</div>
+                  <p class="whitespace-pre-wrap text-sm leading-7 text-zinc-100" x-text="candidate.content"></p>
+                </div>
+              </div>
+            </template>
             <template x-if="candidate.editing">
               <div class="space-y-3">
                 <textarea x-model="candidate.draft.content" class="min-h-32 w-full resize-y rounded-2xl border border-zinc-800 bg-[#0a0a0b] p-3 text-sm outline-none focus:border-coral"></textarea>

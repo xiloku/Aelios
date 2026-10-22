@@ -27,6 +27,7 @@ import {
   parseJsonArray
 } from "../memory/candidateJudge";
 import { isClefReviewOn } from "../memory/clefJudge";
+import { coreIntimateMax, isIntimateLayer } from "../memory/layers";
 import { exportMemories } from "../memory/export";
 import { formatSpeakerTranscript, loadSpeakersForNamespace } from "../memory/speakers";
 import { buildBootPackage, isV2Enabled, runRecall } from "../memory/v2/recall";
@@ -155,6 +156,47 @@ const RENAMED_TOOLS = new Map([
 ]);
 
 const CORE_MEMORY_LIMIT = 10;
+
+// 1a wake_up 分层名额：从已按原排序 (pinned/importance/updated_at) 取回的候选里挑出 limit 条，
+// 其中带「亲密」层的最多 intimateMax 条，其余名额按原顺序用非亲密记忆补齐。
+// 层内与层间的相对顺序都保持原排序，只是把超额的亲密记忆往后挪、让下一名非亲密的顶上来。
+// tags 在 MemoryRecord 里是 JSON 字符串数组，这里解析一次判层。
+function parseRecordTags(raw: unknown): string[] {
+  if (typeof raw !== "string") return Array.isArray(raw) ? (raw as string[]) : [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function selectCoreWithLayerQuota<T extends { tags?: unknown }>(
+  records: T[],
+  limit: number,
+  intimateMax: number
+): T[] {
+  if (records.length <= limit) return records.slice(0, limit);
+  const picked: T[] = [];
+  const overflow: T[] = []; // 超出亲密名额、暂时挪后的亲密记忆，名额没填满时再补回来
+  let intimateCount = 0;
+  for (const record of records) {
+    if (picked.length >= limit) break;
+    const intimate = isIntimateLayer(parseRecordTags(record.tags));
+    if (intimate && intimateCount >= intimateMax) {
+      overflow.push(record);
+      continue;
+    }
+    picked.push(record);
+    if (intimate) intimateCount += 1;
+  }
+  // 非亲密不够、名额还空着时，用挪后的亲密记忆按原序补满 (宁可多一条亲密，也不交白卷)。
+  for (const record of overflow) {
+    if (picked.length >= limit) break;
+    picked.push(record);
+  }
+  return picked;
+}
 
 interface ToolListOptions {
   // ?tools=all：连维护工具 (memory_get、memory_export) 一起列。
@@ -569,15 +611,19 @@ async function callTool(
     if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
     if (!isV2Enabled(env)) return toolError("wake_up requires MEMORY_LIFECYCLE_ENABLED=true");
     const namespace = resolveNamespace(profile, args.namespace);
+    // 1a 分层名额：先多取一些 (按原排序 pinned/importance/updated_at)，再按层限额选出 10 条，
+    // 亲密层最多 coreIntimateMax 条 (默认 2)，腾出的名额用下一名非亲密的补齐。只重排名额，不改层内顺序。
+    const coreFetch = Math.min(Math.max(CORE_MEMORY_LIMIT * 4, CORE_MEMORY_LIMIT), 100);
     const [pkg, corePage] = await Promise.all([
       buildBootPackage(env, { namespace }),
-      listMemoriesPage(env.DB, { namespace, status: "active", limit: CORE_MEMORY_LIMIT, offset: 0 })
+      listMemoriesPage(env.DB, { namespace, status: "active", limit: coreFetch, offset: 0 })
     ]);
     if (pkg.precious.length > 0) {
       ctx.waitUntil(markPreciousInjected(env.DB, { namespace, ids: pkg.precious.map((p) => p.id) }));
     }
     // 置顶优先、再按重要度的前几条：官端用户日记常是空的，开场至少知道这个人是谁。
-    const core = corePage.records.map((record) => ({ id: record.id, type: record.type, content: record.content }));
+    const core = selectCoreWithLayerQuota(corePage.records, CORE_MEMORY_LIMIT, coreIntimateMax(env, CORE_MEMORY_LIMIT))
+      .map((record) => ({ id: record.id, type: record.type, content: record.content }));
     return textToolResult({ data: { how_to_use: MEMORY_GUIDE, core, ...pkg } });
   }
 

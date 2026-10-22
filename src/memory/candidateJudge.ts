@@ -18,7 +18,14 @@ import {
   type MemoryCandidateRow
 } from "../db/v2";
 import type { Env, MessageRecord } from "../types";
-import { askClef, buildClefInput, CLEF_JUDGE_NAME, CLEF_MODEL, isClefReviewOn } from "./clefJudge";
+import { askClef, buildClefInput, CLEF_JUDGE_NAME, isClefReviewOn } from "./clefJudge";
+import {
+  askCompatJudge,
+  buildJudgeModelChain,
+  COMPAT_JUDGE_NAME,
+  isCompatJudgeModel,
+  resolveJudgeModel
+} from "./compatJudge";
 import { createVectorMemory } from "./vectorStore";
 import { loadSpeakersForNamespace, type DreamSpeakers } from "./speakers";
 
@@ -107,11 +114,19 @@ async function callClef(
   speakers: DreamSpeakers | null
 ): Promise<JudgeModelResult | null> {
   const kind = judgeKindFor(candidate.source);
-  const oldMemory = kind === "update" ? await loadOldMemoryForCandidate(env, namespace, candidate) : null;
+  // update 要附上被替换的旧记忆；delete 的旧记忆是被归档对象 (compat 审时也带上，clef 走原逻辑不带)。
+  const judgeModel = resolveJudgeModel(env);
+  const useCompat = isCompatJudgeModel(judgeModel);
+  const oldMemory = kind === "update" || (useCompat && kind === "delete")
+    ? await loadOldMemoryForCandidate(env, namespace, candidate)
+    : null;
   try {
+    if (useCompat) {
+      return await askCompatJudge(env, { kind, candidate, messages, speakers, oldMemory });
+    }
     return await askClef(env, buildClefInput(kind, candidate, messages, speakers, oldMemory), kind);
   } catch (error) {
-    console.error("candidate judge: clef call failed", { id: candidate.id, error });
+    console.error("candidate judge: judge call failed", { id: candidate.id, model: judgeModel, error });
     return null;
   }
 }
@@ -192,8 +207,11 @@ export async function runCandidateJudge(
   if (!isClefReviewOn(env)) {
     return { ran: false, judged: 0, approved: 0, discarded: 0, kept: 0, failed: 0, reason: "clef_off" };
   }
-  const model = CLEF_MODEL;
-  const judgedBy = CLEF_JUDGE_NAME;
+  const judgeModel = resolveJudgeModel(env);
+  const useCompat = isCompatJudgeModel(judgeModel);
+  // compat 路径报告主模型名 (链首)；clef 路径仍报告 clef。
+  const model = useCompat ? buildJudgeModelChain(env)[0] : "@cf/cloudflare/clef";
+  const judgedBy = useCompat ? COMPAT_JUDGE_NAME : CLEF_JUDGE_NAME;
   const limit = readPositiveInt(options.limit ?? env.JUDGE_MAX_CANDIDATES, CLEF_DEFAULT_MAX_CANDIDATES, MAX_CANDIDATES_CAP);
 
   const candidates = await listMemoryCandidates(env.DB, { namespace, status: "pending", limit });
